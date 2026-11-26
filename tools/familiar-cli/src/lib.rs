@@ -1235,21 +1235,19 @@ mod tests {
         assert!(personality.contains("quiet painted"));
     }
 
-    fn webp_vp8x(width: u32, height: u32) -> Vec<u8> {
-        let mut payload = [0u8; 10];
-        let w = (width - 1).to_le_bytes();
-        let h = (height - 1).to_le_bytes();
-        payload[4] = w[0];
-        payload[5] = w[1];
-        payload[6] = w[2];
-        payload[7] = h[0];
-        payload[8] = h[1];
-        payload[9] = h[2];
-        let mut out = Vec::from(*b"RIFF\0\0\0\0WEBPVP8X");
-        out.extend((payload.len() as u32).to_le_bytes());
-        out.extend(payload);
-        let riff_size = (out.len() - 8) as u32;
-        out[4..8].copy_from_slice(&riff_size.to_le_bytes());
+    fn webp_simple_vp8l(width: u32, height: u32) -> Vec<u8> {
+        let packed = (width - 1) | ((height - 1) << 14);
+        let mut payload = vec![0x2F];
+        payload.extend(packed.to_le_bytes());
+        let mut body = Vec::from(*b"WEBPVP8L");
+        body.extend((payload.len() as u32).to_le_bytes());
+        body.extend(&payload);
+        if payload.len() % 2 == 1 {
+            body.push(0);
+        }
+        let mut out = Vec::from(*b"RIFF");
+        out.extend((body.len() as u32).to_le_bytes());
+        out.extend(body);
         out
     }
 
@@ -1265,7 +1263,7 @@ mod tests {
     fn validate_codex_sheet_file_accepts_generated_webp() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("sheet.webp");
-        fs::write(&path, webp_vp8x(1536, 1872)).unwrap();
+        fs::write(&path, webp_simple_vp8l(1536, 1872)).unwrap();
         let report = validate_codex_sheet_file(&path).unwrap();
         assert!(report.ok);
         assert_eq!(report.format, "webp");

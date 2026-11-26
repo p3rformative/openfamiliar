@@ -53,15 +53,31 @@ markings, eyes, neck, or transparency, and do not hand-edit generated variants.
 
 ## Codex sheet validation
 
-You can check that a local WebP file is a 1536×1872 sheet of at most 20 MiB.
-The check uses magic bytes and the image header, not the file extension. PNG
-and other formats are rejected. It is validation only: it does not import a
-pack, map frames, or claim full compatibility with Codex art tools. Frame
-layout is still pending.
+This check is not related to the Codex CLI provider, and it is separate from the 64 px pack import above. OpenFamiliar can run a header-only check on a file you choose. This command accepts only WebP (detected from magic bytes and the container header, not the file extension), exactly 1536×1872 pixels, and at most 20 MiB. Animated WebP files are rejected. PNG and other formats are rejected by this command, even though the public Hatch Pet skill describes a 1536×1872 atlas that may be PNG or WebP. The 20 MiB cap is an OpenFamiliar limit for this command, not a documented official Codex package limit.
+
+This is an OpenFamiliar size and format check. It does not import or install a pack or pet, map frames, read Codex authentication storage, browser sessions, cookies, `.env` files, workspace content, or `~/.codex`, or claim affiliation with, sponsorship by, endorsement from, or official compatibility with OpenAI or Codex. Frame layout remains pending.
+
+OpenFamiliar is an independent open-source project and is not affiliated with, sponsored by, or endorsed by OpenAI, Codex, or their respective products.
+
+### PowerShell
 
 ```powershell
 cargo run -p familiar-cli -- pack validate-codex-sheet .\sheet.webp
 ```
+
+A successful check prints JSON like:
+
+```json
+{
+  "ok": true,
+  "format": "webp",
+  "width": 1536,
+  "height": 1872,
+  "bytes": 26
+}
+```
+
+### Python
 
 ```python
 import subprocess
@@ -69,7 +85,3 @@ subprocess.check_call(
     ["cargo", "run", "-p", "familiar-cli", "--", "pack", "validate-codex-sheet", "sheet.webp"]
 )
 ```
-
-A failure names a single reason: unsupported format (only WebP is accepted),
-incorrect dimensions (actual and expected sizes), a file larger than 20 MiB
-(actual size), or an unreadable file.

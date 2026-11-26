@@ -1,9 +1,11 @@
-//! Header-only validation for a Codex-sized pack sheet.
+//! Header-only validation for a still WebP pack sheet.
 //!
-//! This checks that a file is WebP, has the required canvas size, and is within
-//! the size cap. It does not map frames, crop, or import animation data.
+//! This checks magic bytes, container and bitstream headers, canvas size, and
+//! the file length cap. It does not map frames, decode pixels, crop, or import
+//! animation data.
 
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use thiserror::Error;
 
@@ -15,6 +17,8 @@ const PNG_SIGNATURE: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 const JPEG_SOI: &[u8] = &[0xFF, 0xD8, 0xFF];
 const GIF87A: &[u8] = b"GIF87a";
 const GIF89A: &[u8] = b"GIF89a";
+const WEBP_HEADER_LEN: usize = 12;
+const VP8X_ANIMATION_FLAG: u8 = 0x02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexSheetFormat {
@@ -35,6 +39,8 @@ pub enum CodexSheetError {
     Unreadable(String),
     #[error("unsupported image format (only WebP is accepted)")]
     UnsupportedFormat,
+    #[error("animated WebP is not supported")]
+    Animated,
     #[error("image is {width}x{height} pixels; expected {CODEX_SHEET_WIDTH}x{CODEX_SHEET_HEIGHT}")]
     WrongDimensions { width: u32, height: u32 },
     #[error("file is {len} bytes; maximum is {CODEX_SHEET_MAX_BYTES} bytes (20 MiB)")]
@@ -42,7 +48,9 @@ pub enum CodexSheetError {
 }
 
 pub fn validate_codex_sheet_path(path: &Path) -> Result<CodexSheetInfo, CodexSheetError> {
-    let meta = fs::metadata(path).map_err(|err| {
+    let file = File::open(path)
+        .map_err(|err| CodexSheetError::Unreadable(format!("could not read file ({err})")))?;
+    let meta = file.metadata().map_err(|err| {
         CodexSheetError::Unreadable(format!("could not read file metadata ({err})"))
     })?;
     if !meta.is_file() {
@@ -54,8 +62,16 @@ pub fn validate_codex_sheet_path(path: &Path) -> Result<CodexSheetInfo, CodexShe
     if len > CODEX_SHEET_MAX_BYTES {
         return Err(CodexSheetError::TooLarge { len });
     }
-    let bytes = fs::read(path)
+    let mut limited = file.take(CODEX_SHEET_MAX_BYTES + 1);
+    let mut bytes = Vec::new();
+    limited
+        .read_to_end(&mut bytes)
         .map_err(|err| CodexSheetError::Unreadable(format!("could not read file ({err})")))?;
+    if bytes.len() as u64 > CODEX_SHEET_MAX_BYTES {
+        return Err(CodexSheetError::TooLarge {
+            len: bytes.len() as u64,
+        });
+    }
     validate_codex_sheet(&bytes)
 }
 
@@ -69,7 +85,7 @@ pub fn validate_codex_sheet(bytes: &[u8]) -> Result<CodexSheetInfo, CodexSheetEr
     }
 
     let (width, height) = match detect_format(bytes) {
-        Detected::Webp => webp_dimensions(bytes)?,
+        Detected::Webp => parse_webp(bytes)?,
         Detected::Unsupported => return Err(CodexSheetError::UnsupportedFormat),
         Detected::Unreadable => {
             return Err(CodexSheetError::Unreadable(
@@ -77,14 +93,13 @@ pub fn validate_codex_sheet(bytes: &[u8]) -> Result<CodexSheetInfo, CodexSheetEr
             ))
         }
     };
-    let format = CodexSheetFormat::Webp;
 
     if width != CODEX_SHEET_WIDTH || height != CODEX_SHEET_HEIGHT {
         return Err(CodexSheetError::WrongDimensions { width, height });
     }
 
     Ok(CodexSheetInfo {
-        format,
+        format: CodexSheetFormat::Webp,
         width,
         height,
         len,
@@ -108,64 +123,105 @@ fn detect_format(bytes: &[u8]) -> Detected {
     {
         return Detected::Unsupported;
     }
-    // A prefix too short to hold a complete WebP magic is treated as
-    // unreadable rather than an unknown format.
-    if bytes.len() < 12 {
+    if bytes.len() < WEBP_HEADER_LEN {
         return Detected::Unreadable;
     }
     Detected::Unsupported
 }
 
 fn is_webp_magic(bytes: &[u8]) -> bool {
-    bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP"
+    bytes.len() >= WEBP_HEADER_LEN && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP"
 }
 
-fn webp_dimensions(bytes: &[u8]) -> Result<(u32, u32), CodexSheetError> {
-    if bytes.len() < 12 {
+fn parse_webp(bytes: &[u8]) -> Result<(u32, u32), CodexSheetError> {
+    if bytes.len() < WEBP_HEADER_LEN {
         return Err(CodexSheetError::Unreadable(
             "truncated WebP header".to_string(),
         ));
     }
-    let mut offset = 12usize;
-    while offset + 8 <= bytes.len() {
+    let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as u64;
+    let riff_end = 8u64
+        .checked_add(riff_size)
+        .ok_or_else(|| CodexSheetError::Unreadable("invalid RIFF size".to_string()))?;
+    if riff_end < WEBP_HEADER_LEN as u64 {
+        return Err(CodexSheetError::Unreadable(
+            "RIFF size is below the WebP minimum".to_string(),
+        ));
+    }
+    if riff_end > bytes.len() as u64 {
+        return Err(CodexSheetError::Unreadable(
+            "RIFF size extends past the end of the file".to_string(),
+        ));
+    }
+    let riff_end = riff_end as usize;
+
+    let mut offset = WEBP_HEADER_LEN;
+    let mut canvas = None;
+    let mut image = None;
+    while offset < riff_end {
+        if riff_end - offset < 8 {
+            return Err(CodexSheetError::Unreadable(
+                "truncated WebP chunk header".to_string(),
+            ));
+        }
         let fourcc = &bytes[offset..offset + 4];
         let chunk_size =
             u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
         let data_start = offset + 8;
         let Some(data_end) = data_start.checked_add(chunk_size) else {
             return Err(CodexSheetError::Unreadable(
-                "truncated WebP chunk".to_string(),
+                "WebP chunk extends past the RIFF payload".to_string(),
             ));
         };
-        if data_end > bytes.len() {
+        if data_end > riff_end {
             return Err(CodexSheetError::Unreadable(
-                "truncated WebP chunk".to_string(),
+                "WebP chunk extends past the RIFF payload".to_string(),
+            ));
+        }
+        let padded = chunk_size + (chunk_size & 1);
+        let Some(next) = data_start.checked_add(padded) else {
+            return Err(CodexSheetError::Unreadable(
+                "WebP chunk padding extends past the RIFF payload".to_string(),
+            ));
+        };
+        if next > riff_end {
+            return Err(CodexSheetError::Unreadable(
+                "WebP chunk padding extends past the RIFF payload".to_string(),
             ));
         }
         let payload = &bytes[data_start..data_end];
-        let dims = match fourcc {
-            b"VP8X" => Some(vp8x_dimensions(payload)?),
-            b"VP8L" => Some(vp8l_dimensions(payload)?),
-            b"VP8 " => Some(vp8_dimensions(payload)?),
-            _ => None,
-        };
-        if let Some((width, height)) = dims {
-            return Ok((width, height));
-        }
-        // Chunks are padded to even length.
-        let padded = chunk_size + (chunk_size & 1);
-        offset = match data_start.checked_add(padded) {
-            Some(next) => next,
-            None => {
-                return Err(CodexSheetError::Unreadable(
-                    "truncated WebP chunk".to_string(),
-                ))
+        match fourcc {
+            b"VP8X" => {
+                if payload.len() < 10 {
+                    return Err(CodexSheetError::Unreadable(
+                        "truncated VP8X chunk".to_string(),
+                    ));
+                }
+                if payload[0] & VP8X_ANIMATION_FLAG != 0 {
+                    return Err(CodexSheetError::Animated);
+                }
+                canvas = Some(vp8x_dimensions(payload)?);
             }
-        };
+            b"ANIM" | b"ANMF" => return Err(CodexSheetError::Animated),
+            b"VP8L" => image = Some(vp8l_dimensions(payload)?),
+            b"VP8 " => image = Some(vp8_dimensions(payload)?),
+            _ => {}
+        }
+        offset = next;
     }
-    Err(CodexSheetError::Unreadable(
-        "WebP header has no canvas size".to_string(),
-    ))
+
+    let image = image.ok_or_else(|| {
+        CodexSheetError::Unreadable("WebP file has no VP8 or VP8L image chunk".to_string())
+    })?;
+    if let Some(canvas) = canvas {
+        if canvas != image {
+            return Err(CodexSheetError::Unreadable(format!(
+                "VP8/VP8L image is {}x{}; it does not match the VP8X canvas {}x{}",
+                image.0, image.1, canvas.0, canvas.1
+            )));
+        }
+    }
+    Ok(image)
 }
 
 fn vp8x_dimensions(payload: &[u8]) -> Result<(u32, u32), CodexSheetError> {
@@ -180,12 +236,23 @@ fn vp8x_dimensions(payload: &[u8]) -> Result<(u32, u32), CodexSheetError> {
 }
 
 fn vp8l_dimensions(payload: &[u8]) -> Result<(u32, u32), CodexSheetError> {
-    if payload.len() < 5 || payload[0] != 0x2F {
+    if payload.len() < 5 {
         return Err(CodexSheetError::Unreadable(
             "truncated VP8L chunk".to_string(),
         ));
     }
+    if payload[0] != 0x2F {
+        return Err(CodexSheetError::Unreadable(
+            "VP8L frame is missing its signature".to_string(),
+        ));
+    }
     let bits = u32::from_le_bytes(payload[1..5].try_into().unwrap());
+    let version = (bits >> 29) & 0x7;
+    if version != 0 {
+        return Err(CodexSheetError::Unreadable(
+            "VP8L version must be 0".to_string(),
+        ));
+    }
     let width = (bits & 0x3FFF) + 1;
     let height = ((bits >> 14) & 0x3FFF) + 1;
     Ok((width, height))
@@ -196,6 +263,11 @@ fn vp8_dimensions(payload: &[u8]) -> Result<(u32, u32), CodexSheetError> {
     if payload.len() < 10 {
         return Err(CodexSheetError::Unreadable(
             "truncated VP8 chunk".to_string(),
+        ));
+    }
+    if payload[0] & 0x01 != 0 {
+        return Err(CodexSheetError::Unreadable(
+            "VP8 frame is not a keyframe".to_string(),
         ));
     }
     if payload[3..6] != [0x9D, 0x01, 0x2A] {
@@ -217,6 +289,7 @@ fn vp8_dimensions(payload: &[u8]) -> Result<(u32, u32), CodexSheetError> {
 mod tests {
     use super::*;
     use image::{ImageEncoder, Rgba, RgbaImage};
+    use std::fs;
 
     fn solid_png(width: u32, height: u32) -> Vec<u8> {
         let img = RgbaImage::from_pixel(width, height, Rgba([16, 80, 140, 255]));
@@ -228,8 +301,9 @@ mod tests {
         out
     }
 
-    fn webp_vp8x(width: u32, height: u32) -> Vec<u8> {
-        let mut payload = [0u8; 10];
+    fn vp8x_payload(width: u32, height: u32, flags: u8) -> Vec<u8> {
+        let mut payload = vec![0u8; 10];
+        payload[0] = flags;
         let w = (width - 1).to_le_bytes();
         let h = (height - 1).to_le_bytes();
         payload[4] = w[0];
@@ -238,12 +312,64 @@ mod tests {
         payload[7] = h[0];
         payload[8] = h[1];
         payload[9] = h[2];
-        let mut out = Vec::from(*b"RIFF\0\0\0\0WEBPVP8X");
-        out.extend((payload.len() as u32).to_le_bytes());
-        out.extend(payload);
-        let riff_size = (out.len() - 8) as u32;
-        out[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        payload
+    }
+
+    fn vp8l_payload(width: u32, height: u32) -> Vec<u8> {
+        let packed = (width - 1) | ((height - 1) << 14);
+        let mut payload = vec![0x2F];
+        payload.extend(packed.to_le_bytes());
+        payload
+    }
+
+    fn vp8_payload(width: u32, height: u32) -> Vec<u8> {
+        let mut payload = vec![0u8; 10];
+        payload[0] = 0x10;
+        payload[3] = 0x9D;
+        payload[4] = 0x01;
+        payload[5] = 0x2A;
+        let w = (width as u16 & 0x3FFF).to_le_bytes();
+        let h = (height as u16 & 0x3FFF).to_le_bytes();
+        payload[6] = w[0];
+        payload[7] = w[1];
+        payload[8] = h[0];
+        payload[9] = h[1];
+        payload
+    }
+
+    fn webp_riff(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut body = Vec::from(*b"WEBP");
+        for (fourcc, payload) in chunks {
+            body.extend_from_slice(*fourcc);
+            body.extend((payload.len() as u32).to_le_bytes());
+            body.extend(payload);
+            if payload.len() % 2 == 1 {
+                body.push(0);
+            }
+        }
+        let mut out = Vec::from(*b"RIFF");
+        out.extend((body.len() as u32).to_le_bytes());
+        out.extend(body);
         out
+    }
+
+    fn webp_vp8x_only(width: u32, height: u32) -> Vec<u8> {
+        webp_riff(&[(b"VP8X", vp8x_payload(width, height, 0))])
+    }
+
+    fn webp_simple_vp8l(width: u32, height: u32) -> Vec<u8> {
+        webp_riff(&[(b"VP8L", vp8l_payload(width, height))])
+    }
+
+    fn webp_simple_vp8(width: u32, height: u32) -> Vec<u8> {
+        webp_riff(&[(b"VP8 ", vp8_payload(width, height))])
+    }
+
+    fn webp_vp8x_then_vp8(canvas: (u32, u32), image: (u32, u32)) -> Vec<u8> {
+        webp_riff(&[
+            (b"VP8X", vp8x_payload(canvas.0, canvas.1, 0)),
+            (b"VP8 ", vp8_payload(image.0, image.1)),
+        ])
     }
 
     fn jpeg_bytes() -> Vec<u8> {
@@ -256,12 +382,38 @@ mod tests {
 
     #[test]
     fn valid_webp_1536x1872_is_accepted() {
-        let bytes = webp_vp8x(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        let bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
         let info = validate_codex_sheet(&bytes).unwrap();
         assert_eq!(info.format, CodexSheetFormat::Webp);
         assert_eq!(info.width, CODEX_SHEET_WIDTH);
         assert_eq!(info.height, CODEX_SHEET_HEIGHT);
         assert_eq!(info.len, bytes.len() as u64);
+    }
+
+    #[test]
+    fn valid_vp8_bitstream_1536x1872_is_accepted() {
+        let bytes = webp_simple_vp8(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        let info = validate_codex_sheet(&bytes).unwrap();
+        assert_eq!(
+            (info.width, info.height),
+            (CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn vp8x_followed_by_matching_vp8l_is_accepted() {
+        let bytes = webp_riff(&[
+            (
+                b"VP8X",
+                vp8x_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT, 0),
+            ),
+            (b"VP8L", vp8l_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)),
+        ]);
+        let info = validate_codex_sheet(&bytes).unwrap();
+        assert_eq!(
+            (info.width, info.height),
+            (CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)
+        );
     }
 
     #[test]
@@ -275,7 +427,7 @@ mod tests {
 
     #[test]
     fn wrong_dimensions_report_actual_and_expected() {
-        let bytes = webp_vp8x(256, 256);
+        let bytes = webp_simple_vp8l(256, 256);
         let err = validate_codex_sheet(&bytes).unwrap_err();
         assert_eq!(
             err,
@@ -290,6 +442,95 @@ mod tests {
     }
 
     #[test]
+    fn vp8x_only_chunk_is_rejected() {
+        let bytes = webp_vp8x_only(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        assert_eq!(bytes.len(), 30);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(
+            err.to_string().contains("no VP8 or VP8L image chunk"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn animated_vp8x_flag_is_rejected() {
+        let bytes = webp_riff(&[(
+            b"VP8X",
+            vp8x_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT, VP8X_ANIMATION_FLAG),
+        )]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert_eq!(err, CodexSheetError::Animated);
+        assert_eq!(err.to_string(), "animated WebP is not supported");
+    }
+
+    #[test]
+    fn anim_and_anmf_chunks_are_rejected() {
+        let bytes = webp_riff(&[
+            (
+                b"VP8X",
+                vp8x_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT, 0),
+            ),
+            (b"ANIM", vec![0; 6]),
+            (b"VP8L", vp8l_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)),
+        ]);
+        assert_eq!(
+            validate_codex_sheet(&bytes).unwrap_err(),
+            CodexSheetError::Animated
+        );
+
+        let bytes = webp_riff(&[
+            (
+                b"VP8X",
+                vp8x_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT, 0),
+            ),
+            (b"ANMF", vec![0; 16]),
+            (b"VP8L", vp8l_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)),
+        ]);
+        assert_eq!(
+            validate_codex_sheet(&bytes).unwrap_err(),
+            CodexSheetError::Animated
+        );
+    }
+
+    #[test]
+    fn vp8x_canvas_and_vp8_bitstream_must_match() {
+        let bytes = webp_vp8x_then_vp8((CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT), (64, 64));
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        let text = err.to_string();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(text.contains("64x64"), "{text}");
+        assert!(text.contains("1536x1872"), "{text}");
+        assert!(text.contains("does not match the VP8X canvas"), "{text}");
+    }
+
+    #[test]
+    fn riff_size_zero_is_rejected() {
+        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        bytes[4..8].copy_from_slice(&0u32.to_le_bytes());
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("RIFF size is below the WebP minimum"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn riff_size_past_end_of_file_is_rejected() {
+        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        bytes[4..8].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("RIFF size extends past the end of the file"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn oversized_payload_is_rejected_before_format_checks() {
         let len = CODEX_SHEET_MAX_BYTES as usize + 1;
         let bytes = vec![0u8; len];
@@ -298,6 +539,18 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains(&len.to_string()), "{text}");
         assert!(text.contains("20 MiB"), "{text}");
+    }
+
+    #[test]
+    fn exactly_20_mib_valid_webp_is_accepted() {
+        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        bytes.resize(CODEX_SHEET_MAX_BYTES as usize, 0);
+        let info = validate_codex_sheet(&bytes).unwrap();
+        assert_eq!(info.len, CODEX_SHEET_MAX_BYTES);
+        assert_eq!(
+            (info.width, info.height),
+            (CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)
+        );
     }
 
     #[test]
@@ -318,10 +571,56 @@ mod tests {
 
     #[test]
     fn truncated_webp_is_unreadable() {
-        let webp = webp_vp8x(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        let webp = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
         let err = validate_codex_sheet(&webp[..16]).unwrap_err();
         assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
         assert!(err.to_string().contains("unreadable"), "{err}");
+    }
+
+    #[test]
+    fn truncated_vp8_bitstream_is_unreadable() {
+        let mut payload = vp8_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        payload.truncate(4);
+        let bytes = webp_riff(&[
+            (
+                b"VP8X",
+                vp8x_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT, 0),
+            ),
+            (b"VP8 ", payload),
+        ]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(err.to_string().contains("truncated VP8"), "{err}");
+    }
+
+    #[test]
+    fn vp8_interframe_is_rejected() {
+        let mut payload = vp8_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        payload[0] |= 0x01;
+        let bytes = webp_riff(&[(b"VP8 ", payload)]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(err.to_string().contains("not a keyframe"), "{err}");
+    }
+
+    #[test]
+    fn vp8_missing_start_code_is_rejected() {
+        let mut payload = vp8_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        payload[3] = 0x00;
+        let bytes = webp_riff(&[(b"VP8 ", payload)]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(err.to_string().contains("start code"), "{err}");
+    }
+
+    #[test]
+    fn vp8l_nonzero_version_is_rejected() {
+        let mut payload = vp8l_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        payload[4] |= 0x20;
+        let bytes = webp_riff(&[(b"VP8L", payload)]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(err.to_string().contains("VP8L version must be 0"), "{err}");
     }
 
     #[test]
@@ -343,6 +642,17 @@ mod tests {
     }
 
     #[test]
+    fn path_accepts_exactly_20_mib_valid_webp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sheet.webp");
+        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        bytes.resize(CODEX_SHEET_MAX_BYTES as usize, 0);
+        fs::write(&path, &bytes).unwrap();
+        let info = validate_codex_sheet_path(&path).unwrap();
+        assert_eq!(info.len, CODEX_SHEET_MAX_BYTES);
+    }
+
+    #[test]
     fn path_missing_file_is_unreadable() {
         let err = validate_codex_sheet_path(Path::new("/no/such/codex-sheet.webp")).unwrap_err();
         assert!(matches!(err, CodexSheetError::Unreadable(_)));
@@ -350,22 +660,12 @@ mod tests {
 
     #[test]
     fn vp8l_header_dimensions_are_read() {
-        // Signature 0x2F, then 14-bit (width-1) and 14-bit (height-1), LSB first.
-        let width = CODEX_SHEET_WIDTH;
-        let height = CODEX_SHEET_HEIGHT;
-        let packed = (width - 1) | ((height - 1) << 14);
-        let mut payload = vec![0x2F];
-        payload.extend(packed.to_le_bytes());
-        let mut out = Vec::from(*b"RIFF\0\0\0\0WEBPVP8L");
-        out.extend((payload.len() as u32).to_le_bytes());
-        out.extend(&payload);
-        if payload.len() % 2 == 1 {
-            out.push(0);
-        }
-        let riff_size = (out.len() - 8) as u32;
-        out[4..8].copy_from_slice(&riff_size.to_le_bytes());
-        let info = validate_codex_sheet(&out).unwrap();
+        let bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        let info = validate_codex_sheet(&bytes).unwrap();
         assert_eq!(info.format, CodexSheetFormat::Webp);
-        assert_eq!((info.width, info.height), (width, height));
+        assert_eq!(
+            (info.width, info.height),
+            (CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)
+        );
     }
 }

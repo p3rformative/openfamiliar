@@ -34,7 +34,7 @@ enum PackCommands {
     },
     /// Validate a pack directory
     Validate { path: PathBuf },
-    /// Validate a Codex-sized WebP sheet (header only; no frame map)
+    /// Validate a 1536×1872 WebP art sheet, at most 20 MiB (OpenFamiliar header check only; no frame map, no Codex import; not the Codex CLI provider)
     ValidateCodexSheet { path: PathBuf },
     /// Preview pack summary
     Preview { path: PathBuf },
