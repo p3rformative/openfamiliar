@@ -78,11 +78,13 @@ Then:
    says the channel is unconfigured, and make sure it names the endpoint
    host set above.
 6. Only then set the repository variable `UPDATER_RELEASE_ENABLED` to `true`.
-7. A maintainer creates a version tag (`vX.Y.Z`) themselves when they are
-   ready, then dispatches `windows-release` with that tag in the `tag` input.
-   This tree must not create tags or GitHub Releases on its own. The workflow
-   creates a GitHub Release only when that input is a `v*.*.*` tag that
-   already exists.
+7. A maintainer creates a version tag (`vX.Y.Z`, digits only) themselves when
+   they are ready, then dispatches `windows-release` with that existing tag
+   in the `tag` input. The app version in `tauri.conf.json` (or Cargo /
+   package.json, if that is what the build reads) must equal the tag without
+   the leading `v`. This tree must not create tags or GitHub Releases on its
+   own. The workflow creates a GitHub Release only when that input is an
+   existing `vX.Y.Z` tag.
 
 Losing the private key means already-installed copies that embedded the
 matching public key cannot be updated with a newly generated key. Users would
@@ -94,20 +96,22 @@ need to install a new build another way.
 (`apps/desktop/src-tauri/capabilities/settings.json`). The mascot window
 cannot check, download, or install updates. Settings does not look for
 updates at startup; the operator has to click **Buscar actualizaciones**.
-Until the public key and endpoint are configured, that action reports that
-the signed channel is not enabled and does not publish anything.
+Until an endpoint is configured, that action reports that the signed channel is not enabled and makes no network request. An empty public key is not what prevents the request.
 
 ## What the release workflow does
 
 - Triggers: `workflow_dispatch` only. There is no `push` or tag trigger.
-- Input: optional `tag` (`vX.Y.Z`). Leave it empty to build artifacts only.
+- Input: optional `tag` (`vX.Y.Z`, digits only). Leave it empty to build
+  artifacts only.
 - Default path: a notice job runs and does not build, sign, tag, or create a
   GitHub Release.
 - Enabled path: a preflight job confirms that `TAURI_SIGNING_PRIVATE_KEY` is
-  present (it records only whether the secret exists, never the value). A
-  Windows job then builds MSI/NSIS installers with updater artifacts and
-  signatures. A GitHub Release is created only when the dispatch includes a
-  `v*.*.*` tag input and that git tag already exists. Publishing uses
+  present (it records only whether the secret exists, never the value). If a
+  tag is provided, the Windows job checks it out (`refs/tags/<tag>`),
+  requires the format `vX.Y.Z`, and fails when the app version does not equal
+  that tag without the leading `v`. It then builds MSI/NSIS installers with
+  updater artifacts and signatures. A GitHub Release is created only when the
+  dispatch includes an existing `vX.Y.Z` tag. Publishing uses
   `gh release create --verify-tag`, so a missing tag fails instead of
   creating one. A dispatch without that input may upload workflow artifacts
   but does not create a release or a tag. The workflow does not create git

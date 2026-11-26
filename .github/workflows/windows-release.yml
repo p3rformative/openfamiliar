@@ -4,8 +4,10 @@
 # UPDATER_RELEASE_ENABLED=true and the TAURI_SIGNING_PRIVATE_KEY secret
 # (and TAURI_SIGNING_PRIVATE_KEY_PASSWORD if the key uses one). It does not
 # create git tags. A GitHub Release is created only when the workflow is
-# dispatched with a v*.*.* tag input after it has been enabled, and only if
-# that tag already exists. See docs/guides/signed-updates.md.
+# dispatched with a vX.Y.Z tag input after it has been enabled, and only if
+# that tag already exists. The build checks out that tag and refuses to
+# continue if the app version does not match the tag without the leading v.
+# See docs/guides/signed-updates.md.
 #
 # Adding or changing a workflow requires explicit maintainer authorization
 # before merge.
@@ -71,8 +73,21 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
     steps:
+      - name: Validate release tag
+        if: ${{ inputs.tag != '' }}
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            Write-Host "The tag input must match vX.Y.Z (digits only, for example v1.2.3). Got '$($env:RELEASE_TAG)'."
+            exit 1
+          }
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - name: Set up pnpm
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -99,8 +114,66 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          if ($env:RELEASE_TAG -match '^v') {
+          if ($env:RELEASE_TAG) {
+            if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+              Write-Host "The tag input must match vX.Y.Z (digits only, for example v1.2.3). Got '$($env:RELEASE_TAG)'."
+              exit 1
+            }
             $version = $env:RELEASE_TAG
+            $expected = $version.Substring(1)
+
+            function Get-TauriAppVersion {
+              $confPath = "apps/desktop/src-tauri/tauri.conf.json"
+              if (-not (Test-Path -LiteralPath $confPath)) {
+                throw "Missing $confPath"
+              }
+              $confDir = Split-Path -Parent $confPath
+              $conf = Get-Content -LiteralPath $confPath -Raw | ConvertFrom-Json
+              $raw = [string]$conf.version
+              if ($raw) {
+                $asPath = Join-Path $confDir $raw
+                if (Test-Path -LiteralPath $asPath) {
+                  $pkg = Get-Content -LiteralPath $asPath -Raw | ConvertFrom-Json
+                  return [string]$pkg.version
+                }
+                return $raw
+              }
+              $cargoPath = "apps/desktop/src-tauri/Cargo.toml"
+              $cargo = Get-Content -LiteralPath $cargoPath
+              $usesWorkspace = $false
+              $packageVersion = $null
+              $inPackage = $false
+              foreach ($line in $cargo) {
+                if ($line -match '^\s*\[package\]\s*$') { $inPackage = $true; continue }
+                if ($inPackage -and $line -match '^\s*\[') { break }
+                if ($inPackage -and $line -match '^\s*version\.workspace\s*=\s*true\s*$') {
+                  $usesWorkspace = $true
+                }
+                if ($inPackage -and $line -match '^\s*version\s*=\s*"([^"]+)"\s*$') {
+                  $packageVersion = $Matches[1]
+                }
+              }
+              if ($usesWorkspace) {
+                $root = Get-Content -LiteralPath "Cargo.toml"
+                $inWorkspacePackage = $false
+                foreach ($line in $root) {
+                  if ($line -match '^\s*\[workspace\.package\]\s*$') { $inWorkspacePackage = $true; continue }
+                  if ($inWorkspacePackage -and $line -match '^\s*\[') { break }
+                  if ($inWorkspacePackage -and $line -match '^\s*version\s*=\s*"([^"]+)"\s*$') {
+                    return $Matches[1]
+                  }
+                }
+                throw "Could not read workspace.package.version from Cargo.toml"
+              }
+              if ($packageVersion) { return $packageVersion }
+              throw "Could not resolve the app version from tauri.conf.json or Cargo.toml"
+            }
+
+            $appVersion = Get-TauriAppVersion
+            if ($appVersion -ne $expected) {
+              Write-Host "The app version is '$appVersion' but the tag is '$version' (expected '$expected'). Refusing to build so a mismatched binary cannot offer a looping update."
+              exit 1
+            }
           } else {
             $version = "0.1.0"
           }
@@ -149,11 +222,20 @@ jobs:
 
   publish:
     needs: build
-    if: ${{ startsWith(inputs.tag, 'v') }}
+    if: ${{ inputs.tag != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "The tag input must match vX.Y.Z (digits only, for example v1.2.3). Got '$RELEASE_TAG'."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

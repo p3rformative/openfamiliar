@@ -1,16 +1,29 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { UPDATER_UNAVAILABLE_MESSAGE, mapUpdaterError } from "./updater";
+import { normalizeBackendError } from "./backend";
 
 describe("mapUpdaterError", () => {
-  it("treats an empty-endpoints error as an inert channel", () => {
+  it("treats the exact empty-endpoints invoke payload as an inert channel", () => {
+    // invoke rejects with the plugin's serialized string, not an Error object.
+    // normalizeBackendError then uses String(error), which keeps that exact text.
+    const caught = "Updater does not have any endpoints set.";
+    assert.equal(typeof caught, "string");
     assert.equal(
-      mapUpdaterError("Updater does not have any endpoints set."),
+      mapUpdaterError(normalizeBackendError(caught).message),
       UPDATER_UNAVAILABLE_MESSAGE,
     );
+    assert.equal(mapUpdaterError(caught), UPDATER_UNAVAILABLE_MESSAGE);
+  });
+
+  it("does not treat padded or wrapped empty-endpoints text as inert", () => {
     assert.equal(
       mapUpdaterError("  Updater does not have any endpoints set.  "),
-      UPDATER_UNAVAILABLE_MESSAGE,
+      "No se pudo buscar actualizaciones:   Updater does not have any endpoints set.  ",
+    );
+    assert.equal(
+      mapUpdaterError("Error: Updater does not have any endpoints set."),
+      "No se pudo buscar actualizaciones: Error: Updater does not have any endpoints set.",
     );
   });
 
