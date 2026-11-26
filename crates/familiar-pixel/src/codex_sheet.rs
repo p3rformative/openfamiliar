@@ -37,13 +37,13 @@ pub struct CodexSheetInfo {
 pub enum CodexSheetError {
     #[error("image file is unreadable: {0}")]
     Unreadable(String),
-    #[error("unsupported image format (only WebP is accepted)")]
+    #[error("unsupported image format (only WebP is accepted); export the sheet as WebP. The file extension is ignored")]
     UnsupportedFormat,
-    #[error("animated WebP is not supported")]
+    #[error("animated WebP is not supported; export a single still WebP image")]
     Animated,
-    #[error("image is {width}x{height} pixels; expected {CODEX_SHEET_WIDTH}x{CODEX_SHEET_HEIGHT}")]
+    #[error("image is {width}x{height} pixels; expected {CODEX_SHEET_WIDTH}x{CODEX_SHEET_HEIGHT}; export a canvas of exactly that size")]
     WrongDimensions { width: u32, height: u32 },
-    #[error("file is {len} bytes; maximum is {CODEX_SHEET_MAX_BYTES} bytes (20 MiB)")]
+    #[error("file is {len} bytes; maximum is {CODEX_SHEET_MAX_BYTES} bytes (20 MiB); compress or re-export the file")]
     TooLarge { len: u64 },
 }
 
@@ -55,7 +55,7 @@ pub fn validate_codex_sheet_path(path: &Path) -> Result<CodexSheetInfo, CodexShe
     })?;
     if !meta.is_file() {
         return Err(CodexSheetError::Unreadable(
-            "not a regular file".to_string(),
+            "not a regular file; pass a path to a WebP file, not a directory".to_string(),
         ));
     }
     let len = meta.len();
@@ -148,9 +148,17 @@ fn parse_webp(bytes: &[u8]) -> Result<(u32, u32), CodexSheetError> {
             "RIFF size is below the WebP minimum".to_string(),
         ));
     }
+    if riff_size % 2 == 1 {
+        return Err(CodexSheetError::Unreadable("RIFF size is odd".to_string()));
+    }
     if riff_end > bytes.len() as u64 {
         return Err(CodexSheetError::Unreadable(
             "RIFF size extends past the end of the file".to_string(),
+        ));
+    }
+    if riff_end < bytes.len() as u64 {
+        return Err(CodexSheetError::Unreadable(
+            "trailing data after the RIFF payload".to_string(),
         ));
     }
     let riff_end = riff_end as usize;
@@ -190,8 +198,14 @@ fn parse_webp(bytes: &[u8]) -> Result<(u32, u32), CodexSheetError> {
             ));
         }
         let payload = &bytes[data_start..data_end];
+        let first_chunk = offset == WEBP_HEADER_LEN;
         match fourcc {
             b"VP8X" => {
+                if !first_chunk {
+                    return Err(CodexSheetError::Unreadable(
+                        "VP8X chunk must be the first chunk".to_string(),
+                    ));
+                }
                 if payload.len() < 10 {
                     return Err(CodexSheetError::Unreadable(
                         "truncated VP8X chunk".to_string(),
@@ -203,8 +217,23 @@ fn parse_webp(bytes: &[u8]) -> Result<(u32, u32), CodexSheetError> {
                 canvas = Some(vp8x_dimensions(payload)?);
             }
             b"ANIM" | b"ANMF" => return Err(CodexSheetError::Animated),
-            b"VP8L" => image = Some(vp8l_dimensions(payload)?),
-            b"VP8 " => image = Some(vp8_dimensions(payload)?),
+            b"VP8L" | b"VP8 " => {
+                if image.is_some() {
+                    return Err(CodexSheetError::Unreadable(
+                        "WebP file has more than one VP8 or VP8L image chunk".to_string(),
+                    ));
+                }
+                if canvas.is_none() && !first_chunk {
+                    return Err(CodexSheetError::Unreadable(
+                        "VP8/VP8L image chunk must be the first chunk".to_string(),
+                    ));
+                }
+                image = Some(if fourcc == b"VP8L" {
+                    vp8l_dimensions(payload)?
+                } else {
+                    vp8_dimensions(payload)?
+                });
+            }
             _ => {}
         }
         offset = next;
@@ -272,7 +301,7 @@ fn vp8_dimensions(payload: &[u8]) -> Result<(u32, u32), CodexSheetError> {
     }
     if payload[3..6] != [0x9D, 0x01, 0x2A] {
         return Err(CodexSheetError::Unreadable(
-            "VP8 frame is missing its start code".to_string(),
+            "VP8 image data is missing its start code (damaged WebP)".to_string(),
         ));
     }
     let width = u16::from_le_bytes(payload[6..8].try_into().unwrap()) as u32 & 0x3FFF;
@@ -372,6 +401,22 @@ mod tests {
         ])
     }
 
+    fn pad_webp_with_unknown_chunk(mut bytes: Vec<u8>, target_len: usize) -> Vec<u8> {
+        assert!(
+            target_len >= bytes.len() + 8,
+            "target must leave room for an unknown chunk header"
+        );
+        let extra = target_len - bytes.len();
+        assert_eq!(extra % 2, 0, "unknown chunk total must be even");
+        let payload_len = extra - 8;
+        bytes.extend(b"JUNK");
+        bytes.extend((payload_len as u32).to_le_bytes());
+        bytes.resize(target_len, 0);
+        let riff_size = (target_len - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        bytes
+    }
+
     fn jpeg_bytes() -> Vec<u8> {
         let img = RgbaImage::from_pixel(8, 8, Rgba([200, 10, 10, 255]));
         let mut out = Vec::new();
@@ -461,7 +506,10 @@ mod tests {
         )]);
         let err = validate_codex_sheet(&bytes).unwrap_err();
         assert_eq!(err, CodexSheetError::Animated);
-        assert_eq!(err.to_string(), "animated WebP is not supported");
+        assert_eq!(
+            err.to_string(),
+            "animated WebP is not supported; export a single still WebP image"
+        );
     }
 
     #[test]
@@ -543,8 +591,10 @@ mod tests {
 
     #[test]
     fn exactly_20_mib_valid_webp_is_accepted() {
-        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
-        bytes.resize(CODEX_SHEET_MAX_BYTES as usize, 0);
+        let bytes = pad_webp_with_unknown_chunk(
+            webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT),
+            CODEX_SHEET_MAX_BYTES as usize,
+        );
         let info = validate_codex_sheet(&bytes).unwrap();
         assert_eq!(info.len, CODEX_SHEET_MAX_BYTES);
         assert_eq!(
@@ -645,8 +695,10 @@ mod tests {
     fn path_accepts_exactly_20_mib_valid_webp() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sheet.webp");
-        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
-        bytes.resize(CODEX_SHEET_MAX_BYTES as usize, 0);
+        let bytes = pad_webp_with_unknown_chunk(
+            webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT),
+            CODEX_SHEET_MAX_BYTES as usize,
+        );
         fs::write(&path, &bytes).unwrap();
         let info = validate_codex_sheet_path(&path).unwrap();
         assert_eq!(info.len, CODEX_SHEET_MAX_BYTES);
@@ -656,6 +708,94 @@ mod tests {
     fn path_missing_file_is_unreadable() {
         let err = validate_codex_sheet_path(Path::new("/no/such/codex-sheet.webp")).unwrap_err();
         assert!(matches!(err, CodexSheetError::Unreadable(_)));
+    }
+
+    #[test]
+    fn vp8_then_vp8l_is_rejected() {
+        let bytes = webp_riff(&[
+            (b"VP8 ", vp8_payload(64, 64)),
+            (b"VP8L", vp8l_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)),
+        ]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("more than one VP8 or VP8L image chunk"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn vp8_before_vp8x_is_rejected() {
+        let bytes = webp_riff(&[
+            (b"VP8 ", vp8_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)),
+            (
+                b"VP8X",
+                vp8x_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT, 0),
+            ),
+        ]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("VP8X chunk must be the first chunk"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn two_image_bitstreams_are_rejected() {
+        let bytes = webp_riff(&[
+            (
+                b"VP8X",
+                vp8x_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT, 0),
+            ),
+            (b"VP8 ", vp8_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)),
+            (b"VP8L", vp8l_payload(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT)),
+        ]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("more than one VP8 or VP8L image chunk"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn odd_riff_size_is_rejected() {
+        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        bytes.push(0);
+        let size = (bytes.len() - 8) as u32;
+        assert_eq!(size % 2, 1);
+        bytes[4..8].copy_from_slice(&size.to_le_bytes());
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(err.to_string().contains("RIFF size is odd"), "{err}");
+    }
+
+    #[test]
+    fn trailing_data_after_riff_is_rejected() {
+        let mut bytes = webp_simple_vp8l(CODEX_SHEET_WIDTH, CODEX_SHEET_HEIGHT);
+        bytes.extend_from_slice(&[0, 1, 2, 3]);
+        let err = validate_codex_sheet(&bytes).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("trailing data after the RIFF payload"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn path_rejects_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = validate_codex_sheet_path(dir.path()).unwrap_err();
+        assert!(matches!(err, CodexSheetError::Unreadable(_)), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "image file is unreadable: not a regular file; pass a path to a WebP file, not a directory"
+        );
     }
 
     #[test]

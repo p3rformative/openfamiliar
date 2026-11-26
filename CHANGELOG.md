@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Header-only OpenFamiliar check for a WebP file that is exactly 1536×1872 and at most 20 MiB, via `familiar pack validate-codex-sheet`. This command accepts only still WebP; PNG, animated WebP and other formats are rejected here. This is not the Codex CLI adapter. It does not map frames, import or install a pet, read Codex directories or auth files, or claim official Codex compatibility or affiliation. The 20 MiB cap is this command's limit. Frame layout remains pending.
+- Header-only OpenFamiliar check for a WebP file that is exactly 1536×1872 and at most 20 MiB, via `familiar pack validate-codex-sheet`. This command accepts only still WebP; PNG, animated WebP and other formats are rejected here. This is not the Codex CLI adapter. It does not map frames, import or install a pet, read Codex directories or auth files, or claim official Codex compatibility or affiliation. The 20 MiB cap is this command's limit. Frame layout remains pending. Checks headers only and does not decode pixels; ok: true does not guarantee a decodable image.
 
 - Maintainer checklist and a manual, inert GitHub Actions workflow for a
   possible SignPath Foundation evaluation (`docs/signing.md`). The workflow

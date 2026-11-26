@@ -53,11 +53,13 @@ markings, eyes, neck, or transparency, and do not hand-edit generated variants.
 
 ## Codex sheet validation
 
-This check is not related to the Codex CLI provider, and it is separate from the 64 px pack import above. OpenFamiliar can run a header-only check on a file you choose. This command accepts only WebP (detected from magic bytes and the container header, not the file extension), exactly 1536×1872 pixels, and at most 20 MiB. Animated WebP files are rejected. PNG and other formats are rejected by this command, even though the public Hatch Pet skill describes a 1536×1872 atlas that may be PNG or WebP. The 20 MiB cap is an OpenFamiliar limit for this command, not a documented official Codex package limit.
+This check is not related to the Codex CLI provider, and it is separate from the 64 px pack import above. OpenFamiliar can run a header-only check on a file you choose. This command accepts only WebP (detected from magic bytes and the container header, not the file extension), exactly 1536×1872 pixels, and at most 20 MiB. Animated WebP files are rejected. PNG and other formats are rejected by this command, even though the public Hatch Pet skill (https://github.com/openai/skills/blob/49f948faa9258a0c61caceaf225e179651397431/skills/.curated/hatch-pet/SKILL.md) describes a 1536×1872 atlas that may be PNG or WebP. The 20 MiB cap is an OpenFamiliar limit for this command, not a documented official Codex package limit.
 
 This is an OpenFamiliar size and format check. It does not import or install a pack or pet, map frames, read Codex authentication storage, browser sessions, cookies, `.env` files, workspace content, or `~/.codex`, or claim affiliation with, sponsorship by, endorsement from, or official compatibility with OpenAI or Codex. Frame layout remains pending.
 
 OpenFamiliar is an independent open-source project and is not affiliated with, sponsored by, or endorsed by OpenAI, Codex, or their respective products.
+
+Checks headers only and does not decode pixels; ok: true does not guarantee a decodable image.
 
 ### PowerShell
 
@@ -76,6 +78,8 @@ A successful check prints JSON like:
   "bytes": 26
 }
 ```
+
+`ok` means this OpenFamiliar header check passed. It does not mean the file is a complete decode or an officially compatible Codex pet.
 
 ### Python
 
