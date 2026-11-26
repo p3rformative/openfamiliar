@@ -13,12 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Inert signed-updater wiring for the Settings window and a manual/tag
-  Windows release workflow that does not create tags or GitHub Releases until
-  a maintainer enables it (`docs/guides/signed-updates.md`). The plugin is
-  pinned to 2.12.0 so the workspace can keep `rust-version` 1.88 and Tauri
-  2.11.6; 2.13+ would require Rust 1.90 and Tauri 2.12. Current installers
-  remain unsigned.
+- Inert signed-updater wiring for the Settings window and a manual
+  (`workflow_dispatch` only) Windows release workflow that does not create
+  tags or GitHub Releases until a maintainer enables it and dispatches it
+  with an existing version tag (`docs/guides/signed-updates.md`). The plugin
+  is pinned to 2.12.0 so the workspace can keep `rust-version` 1.88 and
+  Tauri 2.11.6; 2.13+ would require Rust 1.90 and Tauri 2.12. Current
+  installers remain unsigned.
 - Maintainer checklist and a manual, inert GitHub Actions workflow for a
   possible SignPath Foundation evaluation (`docs/signing.md`). The workflow
   does not run on pull requests and does not sign anything until repository

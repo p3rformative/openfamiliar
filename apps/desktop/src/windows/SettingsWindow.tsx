@@ -125,7 +125,7 @@ export function SettingsWindow() {
         return;
       }
       const ok = window.confirm(
-        `Hay una actualización firmada ${update.version}. ¿Descargar e instalar ahora?`,
+        `Hay una actualización firmada a la versión ${update.version}. ¿Descargar e instalar ahora?`,
       );
       if (!ok) {
         setUpdaterNotice(
@@ -550,8 +550,8 @@ export function SettingsWindow() {
             <h2>Actualizaciones firmadas</h2>
             <p>
               Los instaladores actuales no están firmados. El canal de
-              actualización queda inerte hasta que un maintainer publique una
-              clave pública y un release firmado. Esta ventana es la única que
+              actualización queda inerte hasta que un mantenedor publique una
+              clave pública y una versión firmada. Esta ventana es la única que
               puede buscar o instalar actualizaciones, y no lo hace sola al
               arrancar.
             </p>

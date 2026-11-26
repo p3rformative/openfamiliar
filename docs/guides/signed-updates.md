@@ -3,14 +3,14 @@
 Current OpenFamiliar installers are **not signed**, and this repository does
 **not** publish a signed update channel yet. The updater in Settings is inert
 until a maintainer generates a key pair, commits only the **public** key,
-configures the release workflow secrets, and later creates a version tag.
+configures the release workflow secrets, and later publishes a signed release.
 This document does not create keys, tags, or GitHub Releases.
 
-The companion workflow `.github/workflows/windows-release.yml` may run on a
-`v*.*.*` tag or on `workflow_dispatch`, but it stays **inert** until the
-repository variable `UPDATER_RELEASE_ENABLED` is set to `true` and the signing
-secrets below are present. Adding that workflow is a GitHub Actions workflow
-change and needs explicit maintainer authorization before it is merged.
+The companion workflow `.github/workflows/windows-release.yml` runs only on
+`workflow_dispatch` and stays **inert** until the repository variable
+`UPDATER_RELEASE_ENABLED` is set to `true` and the signing secrets below are
+present. Adding that workflow is a GitHub Actions workflow change and needs
+explicit maintainer authorization before it is merged.
 
 Read this together with `docs/guides/windows-code-signing.md`. In-app update
 signatures (minisign) are not a substitute for Windows Authenticode / SignPath
@@ -74,9 +74,15 @@ Then:
 4. Leave `bundle.createUpdaterArtifacts` **unset or false** in the committed
    config so local and unsigned CI builds still work without the private key.
    The release workflow turns that flag on only for a signing build.
-5. Only then set the repository variable `UPDATER_RELEASE_ENABLED` to `true`.
-6. A maintainer creates a version tag (`vX.Y.Z`) themselves when they are
-   ready. This tree must not create tags or GitHub Releases on its own.
+5. Update the "Signed updates" section of `PRIVACY.md` so it no longer
+   says the channel is unconfigured, and make sure it names the endpoint
+   host set above.
+6. Only then set the repository variable `UPDATER_RELEASE_ENABLED` to `true`.
+7. A maintainer creates a version tag (`vX.Y.Z`) themselves when they are
+   ready, then dispatches `windows-release` with that tag in the `tag` input.
+   This tree must not create tags or GitHub Releases on its own. The workflow
+   creates a GitHub Release only when that input is a `v*.*.*` tag that
+   already exists.
 
 Losing the private key means already-installed copies that embedded the
 matching public key cannot be updated with a newly generated key. Users would
@@ -93,15 +99,19 @@ the signed channel is not enabled and does not publish anything.
 
 ## What the release workflow does
 
-- Triggers: `workflow_dispatch`, or a push of a `v*.*.*` tag.
+- Triggers: `workflow_dispatch` only. There is no `push` or tag trigger.
+- Input: optional `tag` (`vX.Y.Z`). Leave it empty to build artifacts only.
 - Default path: a notice job runs and does not build, sign, tag, or create a
   GitHub Release.
 - Enabled path: a preflight job confirms that `TAURI_SIGNING_PRIVATE_KEY` is
   present (it records only whether the secret exists, never the value). A
   Windows job then builds MSI/NSIS installers with updater artifacts and
-  signatures. A GitHub Release is created only for a `v*.*.*` tag. A manual
-  `workflow_dispatch` run may upload workflow artifacts but does not create a
-  release or a tag.
+  signatures. A GitHub Release is created only when the dispatch includes a
+  `v*.*.*` tag input and that git tag already exists. Publishing uses
+  `gh release create --verify-tag`, so a missing tag fails instead of
+  creating one. A dispatch without that input may upload workflow artifacts
+  but does not create a release or a tag. The workflow does not create git
+  tags.
 - Permissions: `contents: read` at the workflow level. The publishing job
   also uses `contents: write` so it can create the release. No `id-token` or
   `packages` permissions.

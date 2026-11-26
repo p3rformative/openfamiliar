@@ -52,6 +52,12 @@ read or copy Codex authentication storage.
 No request is started by idle animation, startup, palette selection, or
 mascot movement. Browser sessions and cookies are never scraped.
 
+## Signed updates
+
+Settings includes a **Buscar actualizaciones** button for a signed update channel. In this build the channel is not configured (no public key and no endpoint), so clicking it makes no network request and only reports that signed updates are not enabled. OpenFamiliar never checks for updates at startup or in the background.
+
+If a maintainer later enables the channel, clicking the button sends an HTTPS request to GitHub to read `latest.json` from this repository's Releases and, only if you confirm, downloads the signed installer from GitHub Releases. GitHub receives your IP address and standard request headers under GitHub's own privacy statement. OpenFamiliar does not send question text, settings, or keys with that request.
+
 ## Sharing diagnostics
 
 There is no automatic log upload. Any diagnostic report is shared voluntarily;
