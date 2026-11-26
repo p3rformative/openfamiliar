@@ -50,3 +50,26 @@ pnpm validate:packs
 canonical 4×4 sheet, runs validator regression tests, and performs a read-only
 byte comparison that fails on variant drift. Do not recolor the coat, white
 markings, eyes, neck, or transparency, and do not hand-edit generated variants.
+
+## Codex sheet validation
+
+You can check that a local WebP file is a 1536×1872 sheet of at most 20 MiB.
+The check uses magic bytes and the image header, not the file extension. PNG
+and other formats are rejected. It is validation only: it does not import a
+pack, map frames, or claim full compatibility with Codex art tools. Frame
+layout is still pending.
+
+```powershell
+cargo run -p familiar-cli -- pack validate-codex-sheet .\sheet.webp
+```
+
+```python
+import subprocess
+subprocess.check_call(
+    ["cargo", "run", "-p", "familiar-cli", "--", "pack", "validate-codex-sheet", "sheet.webp"]
+)
+```
+
+A failure names a single reason: unsupported format (only WebP is accepted),
+incorrect dimensions (actual and expected sizes), a file larger than 20 MiB
+(actual size), or an unreadable file.

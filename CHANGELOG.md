@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Header-only validation for a Codex-sized pack sheet: WebP only, exactly
+  1536×1872 pixels, and at most 20 MiB, via `familiar pack validate-codex-sheet`.
+  PNG and other formats are rejected. This does not map frames, import
+  animation, or claim full Codex compatibility. Frame layout remains pending.
+
 - Maintainer checklist and a manual, inert GitHub Actions workflow for a
   possible SignPath Foundation evaluation (`docs/signing.md`). The workflow
   does not run on pull requests and does not sign anything until repository
