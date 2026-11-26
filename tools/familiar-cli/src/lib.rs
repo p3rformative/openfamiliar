@@ -2,8 +2,8 @@
 
 use anyhow::{bail, Context, Result};
 use familiar_pixel::{
-    import_image, Layout, PixelOptions, DEFAULT_COLORS, FRAME_SIZE, MAX_COLORS, MIN_COLORS,
-    SHEET_COLUMNS, SHEET_ROWS,
+    import_image, validate_codex_sheet_path, CodexSheetError, CodexSheetFormat, Layout,
+    PixelOptions, DEFAULT_COLORS, FRAME_SIZE, MAX_COLORS, MIN_COLORS, SHEET_COLUMNS, SHEET_ROWS,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -150,6 +150,29 @@ pub fn slugify(name: &str) -> Result<String> {
         bail!("invalid pack id '{out}'");
     }
     Ok(out)
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodexSheetReport {
+    pub ok: bool,
+    pub format: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+}
+
+pub fn validate_codex_sheet_file(path: &Path) -> Result<CodexSheetReport, CodexSheetError> {
+    let info = validate_codex_sheet_path(path)?;
+    let format = match info.format {
+        CodexSheetFormat::Webp => "webp",
+    };
+    Ok(CodexSheetReport {
+        ok: true,
+        format,
+        width: info.width,
+        height: info.height,
+        bytes: info.len,
+    })
 }
 
 pub fn pack_init(name: &str, path: &Path) -> Result<()> {
@@ -1210,5 +1233,59 @@ mod tests {
         assert!(png.starts_with(b"\x89PNG"));
         let personality = fs::read_to_string(root.join(info.id).join(PERSONALITY_NAME)).unwrap();
         assert!(personality.contains("quiet painted"));
+    }
+
+    fn webp_simple_vp8l(width: u32, height: u32) -> Vec<u8> {
+        let packed = (width - 1) | ((height - 1) << 14);
+        let mut payload = vec![0x2F];
+        payload.extend(packed.to_le_bytes());
+        let mut body = Vec::from(*b"WEBPVP8L");
+        body.extend((payload.len() as u32).to_le_bytes());
+        body.extend(&payload);
+        if payload.len() % 2 == 1 {
+            body.push(0);
+        }
+        let mut out = Vec::from(*b"RIFF");
+        out.extend((body.len() as u32).to_le_bytes());
+        out.extend(body);
+        out
+    }
+
+    fn codex_png() -> Vec<u8> {
+        let img = RgbaImage::from_pixel(1536, 1872, Rgba([16, 80, 140, 255]));
+        let mut out = Vec::new();
+        let encoder = image::codecs::png::PngEncoder::new(&mut out);
+        img.write_with_encoder(encoder).unwrap();
+        out
+    }
+
+    #[test]
+    fn validate_codex_sheet_file_accepts_generated_webp() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sheet.webp");
+        fs::write(&path, webp_simple_vp8l(1536, 1872)).unwrap();
+        let report = validate_codex_sheet_file(&path).unwrap();
+        assert!(report.ok);
+        assert_eq!(report.format, "webp");
+        assert_eq!((report.width, report.height), (1536, 1872));
+    }
+
+    #[test]
+    fn validate_codex_sheet_file_rejects_png() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("sheet.png");
+        fs::write(&path, codex_png()).unwrap();
+        let err = validate_codex_sheet_file(&path).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("only WebP is accepted"), "{text}");
+    }
+
+    #[test]
+    fn validate_codex_sheet_file_reports_unreadable_missing_path() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing.webp");
+        let err = validate_codex_sheet_file(&missing).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("unreadable"), "{text}");
     }
 }

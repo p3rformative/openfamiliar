@@ -9,6 +9,12 @@ use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use thiserror::Error;
 
+mod codex_sheet;
+pub use codex_sheet::{
+    validate_codex_sheet, validate_codex_sheet_path, CodexSheetError, CodexSheetFormat,
+    CodexSheetInfo, CODEX_SHEET_HEIGHT, CODEX_SHEET_MAX_BYTES, CODEX_SHEET_WIDTH,
+};
+
 pub const SHEET_SIZE: u32 = 256;
 pub const FRAME_SIZE: u32 = 64;
 pub const SHEET_COLUMNS: u32 = 4;
