@@ -48,8 +48,15 @@ pub enum CodexSheetError {
 }
 
 pub fn validate_codex_sheet_path(path: &Path) -> Result<CodexSheetInfo, CodexSheetError> {
-    let file = File::open(path)
-        .map_err(|err| CodexSheetError::Unreadable(format!("could not read file ({err})")))?;
+    let file = File::open(path).map_err(|err| {
+        if std::fs::metadata(path).is_ok_and(|meta| !meta.is_file()) {
+            CodexSheetError::Unreadable(
+                "not a regular file; pass a path to a WebP file, not a directory".to_string(),
+            )
+        } else {
+            CodexSheetError::Unreadable(format!("could not read file ({err})"))
+        }
+    })?;
     let meta = file.metadata().map_err(|err| {
         CodexSheetError::Unreadable(format!("could not read file metadata ({err})"))
     })?;
