@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use familiar_cli::{
     build_pack, default_import_colors, import_image_to_pack, inspect_archive, pack_init,
-    validate_pack, ImportImageRequest, ImportLayout,
+    validate_codex_sheet_file, validate_pack, ImportImageRequest, ImportLayout,
 };
 use std::path::PathBuf;
 
@@ -34,6 +34,8 @@ enum PackCommands {
     },
     /// Validate a pack directory
     Validate { path: PathBuf },
+    /// Validate a 1536×1872 WebP art sheet, at most 20 MiB (OpenFamiliar header check only; no frame map, no Codex import; not the Codex CLI provider)
+    ValidateCodexSheet { path: PathBuf },
     /// Preview pack summary
     Preview { path: PathBuf },
     /// Build a .familiar zip archive
@@ -78,6 +80,10 @@ fn main() -> Result<()> {
                 if !report.ok {
                     std::process::exit(1);
                 }
+            }
+            PackCommands::ValidateCodexSheet { path } => {
+                let report = validate_codex_sheet_file(&path)?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
             }
             PackCommands::Preview { path } => {
                 let report = validate_pack(&path)?;
