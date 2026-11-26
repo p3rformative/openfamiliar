@@ -2,6 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { AvatarEditor } from "../features/mascot-editor/AvatarEditor";
 import { backend, isTauri, normalizeBackendError } from "../lib/backend";
 import {
+  UPDATER_UNAVAILABLE_MESSAGE,
+  UPDATER_UP_TO_DATE_MESSAGE,
+  mapUpdaterError,
+} from "../lib/updater";
+import {
   BUNDLED_MASCOT_ID,
   DEFAULT_PREFERENCES,
   type AppPreferences,
@@ -35,6 +40,8 @@ export function SettingsWindow() {
   const [importError, setImportError] = useState("");
   const [secretDraft, setSecretDraft] = useState("");
   const [anthropicConfigured, setAnthropicConfigured] = useState(false);
+  const [updaterNotice, setUpdaterNotice] = useState("");
+  const [updaterBusy, setUpdaterBusy] = useState(false);
 
   const providerLabel = useMemo(() => {
     if (!provider) return "Sin comprobar";
@@ -102,6 +109,37 @@ export function SettingsWindow() {
       setBusy(false);
     }
   };
+
+  async function checkForSignedUpdate() {
+    setUpdaterBusy(true);
+    setUpdaterNotice("");
+    try {
+      if (!isTauri()) {
+        setUpdaterNotice(UPDATER_UNAVAILABLE_MESSAGE);
+        return;
+      }
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (!update) {
+        setUpdaterNotice(UPDATER_UP_TO_DATE_MESSAGE);
+        return;
+      }
+      const ok = window.confirm(
+        `Hay una actualización firmada a la versión ${update.version}. ¿Descargar e instalar ahora?`,
+      );
+      if (!ok) {
+        setUpdaterNotice(
+          `Actualización ${update.version} disponible. No se instaló.`,
+        );
+        return;
+      }
+      await update.downloadAndInstall();
+    } catch (error) {
+      setUpdaterNotice(mapUpdaterError(normalizeBackendError(error).message));
+    } finally {
+      setUpdaterBusy(false);
+    }
+  }
 
   return (
     <main className="settings-window">
@@ -509,6 +547,27 @@ export function SettingsWindow() {
               autenticado por el operador.
             </p>
             <p>{AFFILIATION_DISCLAIMER}</p>
+            <h2>Actualizaciones firmadas</h2>
+            <p>
+              Los instaladores actuales no están firmados. El canal de
+              actualización queda inerte hasta que un mantenedor publique una
+              clave pública y una versión firmada. Esta ventana es la única que
+              puede buscar o instalar actualizaciones, y no lo hace sola al
+              arrancar.
+            </p>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={updaterBusy}
+              onClick={() => void checkForSignedUpdate()}
+            >
+              {updaterBusy ? "Buscando…" : "Buscar actualizaciones"}
+            </button>
+            {updaterNotice ? (
+              <p className="settings-notice" role="status">
+                {updaterNotice}
+              </p>
+            ) : null}
           </div>
         ) : null}
 

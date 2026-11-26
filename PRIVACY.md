@@ -52,6 +52,12 @@ read or copy Codex authentication storage.
 No request is started by idle animation, startup, palette selection, or
 mascot movement. Browser sessions and cookies are never scraped.
 
+## Signed updates
+
+Settings includes a **Buscar actualizaciones** button for a signed update channel. In this build no updater endpoint is configured, so clicking the button makes no network request and only reports that signed updates are not enabled. The public key is also empty in this build, but an empty public key alone would not stop a request if an endpoint were set. OpenFamiliar never checks for updates at startup or in the background.
+
+If a maintainer later enables the channel, clicking the button sends an HTTPS request to GitHub to read `latest.json` from this repository's Releases and, only if you confirm, downloads the minisign-signed updater artifact from the URL in that manifest. GitHub may redirect either request to its download CDN (such as `objects.githubusercontent.com` or `release-assets.githubusercontent.com`). GitHub, and any GitHub CDN host that serves those redirects, receive your IP address and the updater request headers, including a User-Agent that identifies `tauri-plugin-updater` and an Accept header, under GitHub's own privacy statement. The endpoint documented for this project does not put the app version or platform in the `latest.json` URL; the installer download URL includes the release tag. OpenFamiliar does not send question text, settings, or keys with those requests.
+
 ## Sharing diagnostics
 
 There is no automatic log upload. Any diagnostic report is shared voluntarily;

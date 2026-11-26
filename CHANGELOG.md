@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Header-only OpenFamiliar check for a WebP file that is exactly 1536×1872 and at most 20 MiB, via `familiar pack validate-codex-sheet`. This command accepts only still WebP; PNG, animated WebP and other formats are rejected here. This is not the Codex CLI adapter. It does not map frames, import or install a pet, read Codex directories or auth files, or claim official Codex compatibility or affiliation. The 20 MiB cap is this command's limit. Frame layout remains pending. Checks headers only and does not decode pixels; ok: true does not guarantee a decodable image.
 
+- Inert signed-updater wiring for the Settings window and a manual
+  (`workflow_dispatch` only) Windows release workflow that does not create
+  tags or GitHub Releases until a maintainer enables it and dispatches it
+  with an existing `vX.Y.Z` tag whose app version matches the tag without
+  the leading `v` (`docs/guides/signed-updates.md`). The plugin is pinned to
+  2.12.0 so the workspace can keep `rust-version` 1.88 and Tauri 2.11.6;
+  2.13+ would require Rust 1.90 and Tauri 2.12. Current installers remain
+  unsigned.
+
 - Maintainer checklist and a manual, inert GitHub Actions workflow for a
   possible SignPath Foundation evaluation (`docs/signing.md`). The workflow
   does not run on pull requests and does not sign anything until repository
